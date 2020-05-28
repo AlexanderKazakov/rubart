@@ -1,14 +1,12 @@
 import sys
 import os
+
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from transformers import get_linear_schedule_with_warmup
+
 sys.path.insert(0, os.getcwd())
 from summarization.common import *
-
-
-def collate_fn_summarization(batch):
-    return (
-        encode_text(tokenizer, [txt for txt, title in batch], get_max_len_src()),
-        encode_text(tokenizer, [title for txt, title in batch], get_max_len_tgt())
-    )
+from summarization.modeling_rubart import RuBartForConditionalGeneration
 
 
 def prepare_inputs(source_ids, target_ids):
@@ -45,7 +43,7 @@ def train_epoch():
 
     for source_ids, target_ids in loader:
         batch_counter += 1
-        if batch_counter > total_num_batches / 5:
+        if batch_counter > total_num_batches * TRAIN_EPOCH_FRACTION:
             loader.close()
             break
 
@@ -56,6 +54,9 @@ def train_epoch():
         loss_item = loss.detach().cpu().item()
         loader.set_description(f'{loss_item:.3f}')
         losses.append(loss_item)
+
+        if scheduler is not None and not isinstance(scheduler, ReduceLROnPlateau):
+            scheduler.step()
 
     return np.mean(losses)
 
@@ -135,6 +136,8 @@ def fit():
         clear_or_create_directory(last_ckpt_dir)
         model.save_pretrained(last_ckpt_dir)
         statistics = {'epoch': epoch, 'train_loss': train_loss}
+        if scheduler is not None and isinstance(scheduler, ReduceLROnPlateau):
+            scheduler.step(train_loss)
 
         if epoch % 2 == 0:
             val_loss = val_epoch(val_loader)
@@ -150,18 +153,47 @@ def fit():
             statistics['total_rouge'], statistics['predictions'], statistics['targets'], statistics['inputs'] = \
                 total_rouge, predictions, targets, inputs
             pprint(total_rouge)
-            for hyp, ref, inp in zip(predictions, targets, inputs):
-                print(ref)
-                print(hyp)
-                print('-' * 50)
-                print(inp)
-                print('=' * 50 + '\n')
+            # for hyp, ref, inp in zip(predictions, targets, inputs):
+            #     print(ref)
+            #     print(hyp)
+            #     print('-' * 50)
+            #     print(inp)
+            #     print('=' * 50 + '\n')
 
         all_epoch_statistics.append(statistics)
         with open(CKPT_DIR + 'statistics.json', 'w') as f:
             json.dump(all_epoch_statistics, f, indent=4, sort_keys=True)
 
     print()
+
+
+def read_lenta():
+    all_texts, all_titles = read_data_lenta()
+    train_texts, val_texts, train_titles, val_titles = \
+        train_test_split(all_texts, all_titles, test_size=0.1, shuffle=True)
+    train_dataset = SummarizationDataset(train_texts, train_titles)
+    val_dataset = SummarizationDataset(val_texts, val_titles)
+    collate_fn = CollateFn(tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=get_batch_size(), shuffle=True,
+                              collate_fn=collate_fn, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=get_batch_size(), shuffle=False,
+                            collate_fn=collate_fn, num_workers=8)
+    return train_loader, val_loader
+
+
+def read_sportsru():
+    data = read_data_sportsru()
+    train_dataset = SummarizationDataset(data['train']['src'], data['train']['tgt'])
+    val_dataset = SummarizationDataset(data['val']['src'], data['val']['tgt'])
+    test_dataset = SummarizationDataset(data['test']['src'], data['test']['tgt'])
+    collate_fn = CollateFnSportsru(tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=get_batch_size(), shuffle=True,
+                              collate_fn=collate_fn, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=get_batch_size(), shuffle=False,
+                            collate_fn=collate_fn, num_workers=8)
+    test_loader = DataLoader(test_dataset, batch_size=get_batch_size(), shuffle=False,
+                             collate_fn=collate_fn, num_workers=8)
+    return train_loader, val_loader, test_loader
 
 
 if __name__ == '__main__':
@@ -200,7 +232,45 @@ if __name__ == '__main__':
         type=str,
         help="cuda or cpu",
     )
+    parser.add_argument(
+        "--ckpt_dir",
+        default=None,
+        type=str,
+        help="checkpoint folder to load weights from. "
+             "default -- just load weights from rubert to encoder, initialize decoder with norm(0.02) ",
+    )
+    parser.add_argument(
+        "--lr",
+        default=1e-4,
+        type=float,
+        help="initial learning rate",
+    )
+    parser.add_argument(
+        "--train_whole_model",
+        default=False,
+        type=bool,
+        help="train all parameters. if False (default), train only decoder layers"
+    )
+    parser.add_argument(
+        "--scheduler",
+        default=None,
+        type=str,
+        help="type of scheduler: None, plateau_decay or linear_decay",
+    )
+    parser.add_argument(
+        "--scheduler_num_epochs",
+        default=None,
+        type=int,
+        help="patience for plateau_decay; epochs to zero for linear_decay",
+    )
+    parser.add_argument(
+        "--sportsru",
+        default=False,
+        type=bool,
+        help="train on sports.ru dataset"
+    )
 
+    TRAIN_EPOCH_FRACTION = 0.2
     args = parser.parse_args()
     set_global_device(args.device)
     set_seed(args.seed)
@@ -208,22 +278,30 @@ if __name__ == '__main__':
     set_max_len_src(args.max_source_length)
     set_max_len_tgt(args.max_target_length)
 
-    print('get_global_device:', get_global_device())
-    print('get_batch_size:', get_batch_size())
-    print('get_max_len_src:', get_max_len_src())
-    print('get_max_len_tgt:', get_max_len_tgt())
-
-    all_texts, all_titles = read_data_lenta()
-    train_texts, val_texts, train_titles, val_titles = train_test_split(all_texts, all_titles, test_size=0.1, shuffle=True)
-    train_dataset = SummarizationDataset(train_texts, train_titles)
-    val_dataset = SummarizationDataset(val_texts, val_titles)
-    train_loader = DataLoader(train_dataset, batch_size=get_batch_size(), shuffle=True, collate_fn=collate_fn_summarization)
-    val_loader = DataLoader(val_dataset, batch_size=get_batch_size(), shuffle=False, collate_fn=collate_fn_summarization)
+    print(args)
 
     model, tokenizer = load_rubart_with_pretrained_encoder()
-    # fine_tune: learning_rate = 3e-5, batch_size = 4, get_linear_schedule_with_warmup
-    optimizer = AdamW(model.model.decoder.layers.parameters(), lr=1e-3)
-    # TODO scheduler, weight decay with param groups, get_linear_schedule_with_warmup
+    if args.ckpt_dir is not None:
+        assert os.path.isdir(args.ckpt_dir)
+        model = RuBartForConditionalGeneration.from_pretrained(args.ckpt_dir)
+
+    if args.sportsru:
+        train_loader, val_loader, test_loader = read_sportsru()
+    else:
+        train_loader, val_loader = read_lenta()
+
+    params = model.parameters() if args.train_whole_model else model.model.decoder.layers.parameters()
+    optimizer = AdamW(params, lr=args.lr)
+    # TODO weight decay with param groups
+    if args.scheduler is not None:
+        assert args.scheduler_num_epochs is not None
+        if args.scheduler == 'plateau_decay':
+            scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.scheduler_num_epochs, verbose=True)
+        else:
+            assert args.scheduler == 'linear_decay'
+            num_steps = int(TRAIN_EPOCH_FRACTION * args.scheduler_num_epochs * len(train_loader)) + 10
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=1000, num_training_steps=num_steps)
+
     rouge = Rouge()
     fit()
 

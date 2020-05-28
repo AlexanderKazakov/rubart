@@ -14,19 +14,14 @@ from torch.nn.utils.rnn import pad_sequence
 from rouge import Rouge
 from pprint import pprint
 from tqdm import tqdm
-from summarization.modeling_rubart import RuBartForConditionalGeneration
 from sklearn.model_selection import train_test_split
-
-
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-print('Using', DEVICE)
-if torch.cuda.is_available():
-    print(torch.cuda.get_device_properties(0))
 
 
 def set_global_device(device):
     global DEVICE
     DEVICE = device
+    if torch.cuda.is_available():
+        print(torch.cuda.get_device_properties(0))
     print('Using', DEVICE)
 
 def get_global_device():
@@ -67,7 +62,6 @@ def set_seed(seed):
 
 
 # logging.basicConfig(level=logging.INFO)
-# set_seed(123)
 
 DATA_PATH = 'data/'
 CKPT_DIR = 'rubart_checkpoints/'
@@ -75,7 +69,7 @@ RUBART_ENC_WEIGHTS_DIR = DATA_PATH + 'ckpts/rubart_initial_weights_from_rubert/'
 
 BATCH_SIZE = 2
 
-# for lenta data optimal is 512 / 24, for ria data -- 1024 / 24
+# for lenta data optimal is 512 / 24, for ria data -- 1024 / 24, for sportsru -- 4000 / 200
 MAX_LEN_SRC = 64
 MAX_LEN_TGT = 24
 MIN_LEN_TGT = 1
@@ -101,8 +95,8 @@ def read_data_lenta(path=DATA_PATH + 'lenta-ru-news.csv', clip_length=True):
         reader = csv.reader(csvfile, delimiter=',')
         next(reader)
         for counter, (url, title, text, topic, tags, date) in enumerate(reader):
-            if counter == 10 * get_batch_size():  # COLAB
-                break
+            # if counter == 10 * get_batch_size():  # COLAB
+            #     break
             if clip_length:
                 text = ' '.join(text.split()[:get_max_len_src()])
                 title = ' '.join(title.split()[:get_max_len_tgt()])
@@ -130,6 +124,44 @@ def read_data_ria(path=DATA_PATH + 'processed-ria.json', clip_length=True):
             titles.append(title)
 
     return texts, titles
+
+
+def read_data_sportsru(path=DATA_PATH + 'sportsru/', clip_length=True):
+    data = {
+        'train': {'src': [], 'tgt': []},
+        'val': {'src': [], 'tgt': []},
+        'test': {'src': [], 'tgt': []},
+    }
+    with open(path + 'train_src.broad.txt', encoding='utf8') as f:
+        for line in f:
+            data['train']['src'].append(line)
+    with open(path + 'train_tgt.news.txt', encoding='utf8') as f:
+        for line in f:
+            data['train']['tgt'].append(line)
+    with open(path + 'valid_src.broad.txt', encoding='utf8') as f:
+        for line in f:
+            data['val']['src'].append(line)
+    with open(path + 'valid_tgt.news.txt', encoding='utf8') as f:
+        for line in f:
+            data['val']['tgt'].append(line)
+    with open(path + 'test_src.broad.txt', encoding='utf8') as f:
+        for line in f:
+            data['test']['src'].append(line)
+    with open(path + 'test_tgt.news.txt', encoding='utf8') as f:
+        for line in f:
+            data['test']['tgt'].append(line)
+
+    if clip_length:
+        for k, d in data.items():
+            d['src'] = [' '.join(text.split()[-get_max_len_src():]) for text in d['src']]
+            d['tgt'] = [' '.join(text.split()[-get_max_len_tgt():]) for text in d['tgt']]
+
+    # COLAB
+    # for k, d in data.items():
+    #     d['src'] = d['src'][:10 * get_batch_size()]
+    #     d['tgt'] = d['tgt'][:10 * get_batch_size()]
+
+    return data
 
 
 def clear_or_create_directory(dir_name):
@@ -162,7 +194,49 @@ class SummarizationDataset(Dataset):
         return len(self.texts)
 
 
+class CollateFn:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.max_len_src = get_max_len_src()
+        self.max_len_tgt = get_max_len_tgt()
+
+    def __call__(self, batch):
+        return (
+            encode_text(self.tokenizer, [txt for txt, title in batch], self.max_len_src),
+            encode_text(self.tokenizer, [title for txt, title in batch], self.max_len_tgt)
+        )
+
+
+def encode_text_end(tokenizer, texts, max_len):
+    if isinstance(texts, str):
+        texts = [texts]
+    assert isinstance(texts, list)
+    enc_texts = []
+    for txt in texts:
+        enc = tokenizer.encode(txt, return_tensors='pt').squeeze(0)
+        enc = torch.cat([torch.tensor([tokenizer.convert_tokens_to_ids('[CLS]')]).long(), enc[-max_len + 1:]])
+        enc_texts.append(enc)
+
+    texts_batch = pad_sequence(enc_texts, batch_first=True, padding_value=tokenizer.pad_token_id)
+    return texts_batch
+
+
+class CollateFnSportsru:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.max_len_src = get_max_len_src()
+        self.max_len_tgt = get_max_len_tgt()
+
+    def __call__(self, batch):
+        return (
+            encode_text_end(self.tokenizer, [txt for txt, title in batch], self.max_len_src),
+            encode_text(self.tokenizer, [title for txt, title in batch], self.max_len_tgt)
+        )
+
+
 def load_rubart_with_pretrained_encoder():
+    from summarization.modeling_rubart import RuBartForConditionalGeneration
+
     tokenizer = BertTokenizer.from_pretrained(RUBART_ENC_WEIGHTS_DIR, do_lower_case=False)  # do_lower_case=False is crucial
     config = BartConfig.from_pretrained(RUBART_ENC_WEIGHTS_DIR)
     config.task_specific_params = None
@@ -188,8 +262,9 @@ def load_rubart_with_pretrained_encoder():
 
 
 if __name__ == '__main__':
-    texts_lenta, titles_lenta = read_data_lenta(clip_length=False)
-    texts_ria, titles_ria = read_data_ria(clip_length=False)
+    # texts_lenta, titles_lenta = read_data_lenta(clip_length=False)
+    # texts_ria, titles_ria = read_data_ria(clip_length=False)
+    data_sportsru = read_data_sportsru(clip_length=False)
     tokenizer = BertTokenizer.from_pretrained(RUBART_ENC_WEIGHTS_DIR, do_lower_case=False)  # do_lower_case=False is crucial
 
     def explore(strings):
@@ -201,17 +276,19 @@ if __name__ == '__main__':
         len_enc = [len(e) for e in enc]
         len_spl = [len(s) for s in spl]
         print(f'enc_len / split_len = {np.median([len(e) / len(s) for e, s in zip(enc, spl)])}')
-        print(f'number of samples = {len(texts_lenta)}')
-        print(f'estimated total number of words = {int(np.median(len_spl) * len(texts_lenta))}')
+        print(f'number of samples = {len(strings)}')
+        print(f'estimated total number of words = {int(np.median(len_spl) * len(strings))}')
         plt.clf()
         plt.hist(len_enc, bins=100)
         plt.hist(len_spl, bins=100)
         plt.show()
 
-    explore(texts_lenta)
-    explore(titles_lenta)
-    explore(texts_ria)
-    explore(titles_ria)
+    # explore(texts_lenta)
+    # explore(titles_lenta)
+    # explore(texts_ria)
+    # explore(titles_ria)
+    explore(data_sportsru['train']['src'])
+    explore(data_sportsru['train']['tgt'])
 
 
 
