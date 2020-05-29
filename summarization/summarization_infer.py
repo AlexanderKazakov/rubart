@@ -1,7 +1,9 @@
 import sys
 import os
+
 sys.path.insert(0, os.getcwd())
 from summarization.common import *
+from summarization.modeling_rubart import RuBartForConditionalGeneration
 
 
 CKPT_PATH = DATA_PATH + 'ckpts/rubart_4_epochs_on_lenta'

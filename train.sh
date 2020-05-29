@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 
 # train decoder layers
-python summarization/summarization.py --device='cuda' --seed=123 --max_source_length=256 --max_target_length=24 \
+python summarization/summarization.py --device='cuda' --seed=123 --max_source_length=256 --max_target_length=24 --min_target_length=1 \
 --batch_size=16 --lr=1e-4 --train_whole_model=False --scheduler_num_epochs=1 --scheduler=plateau_decay
 
 # train whole model on lenta
-python summarization/summarization.py --device='cuda' --seed=123 --max_source_length=256 --max_target_length=24 \
+python summarization/summarization.py --device='cuda' --seed=123 --max_source_length=256 --max_target_length=24 --min_target_length=1 \
 --batch_size=16 --ckpt_dir=data/ckpts/with_trained_decoder --lr=1e-5 --train_whole_model=True --scheduler_num_epochs=1 --scheduler=plateau_decay
 
 # train whole model on sportsru
-python summarization/summarization.py --sportsru --device='cuda' --seed=123 --max_source_length=256 --max_target_length=256 \
+python summarization/summarization.py --dataset=sportsru --device='cuda' --seed=123 --max_source_length=256 --max_target_length=256 --min_target_length=64 \
+--batch_size=4 --ckpt_dir=data/ckpts/lenta_pretrained --lr=1e-5 --train_whole_model=True --scheduler_num_epochs=1 --scheduler=plateau_decay
+
+# train whole model on ria
+python summarization/summarization.py --dataset=ria --device='cuda' --seed=123 --max_source_length=512 --max_target_length=24 --min_target_length=1 \
 --batch_size=4 --ckpt_dir=data/ckpts/lenta_pretrained --lr=1e-5 --train_whole_model=True --scheduler_num_epochs=1 --scheduler=plateau_decay
 
 

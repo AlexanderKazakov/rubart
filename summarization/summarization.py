@@ -85,7 +85,7 @@ def test_generation(loader):
         generated_ids = model.generate(
             input_ids=source_ids,
             attention_mask=encoder_attention_mask,
-            num_beams=1
+            num_beams=4
         )
         predictions = [
             tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True)
@@ -106,7 +106,8 @@ def test_generation(loader):
 
         total_num_samples += len(predictions)
         hyp_sents = [[s for s in hyp.split('.') if len(s) > 0] for hyp in predictions]
-        if any(len(sents) > 0 for sents in hyp_sents):  # TODO report bugs to this rouge library
+        tgt_sents = [[s for s in tst.split('.') if len(s) > 0] for tst in targets]
+        if any(len(hyp) > 0 and len(tst) > 0 for hyp, tst in zip(hyp_sents, tgt_sents)):  # TODO report bugs to this rouge library
             batch_rouges = rouge.get_scores(predictions, targets, avg=False, ignore_empty=True)
             for m in total_rouge:
                 for d in total_rouge[m]:
@@ -148,7 +149,7 @@ def fit():
                 clear_or_create_directory(best_ckpt_dir)
                 model.save_pretrained(best_ckpt_dir)
 
-        if epoch % 5 == 0 and epoch != 0:
+        if epoch % 6 == 0 and epoch != 0:
             total_rouge, predictions, targets, inputs = test_generation(val_loader)
             statistics['total_rouge'], statistics['predictions'], statistics['targets'], statistics['inputs'] = \
                 total_rouge, predictions, targets, inputs
@@ -167,8 +168,13 @@ def fit():
     print()
 
 
-def read_lenta():
-    all_texts, all_titles = read_data_lenta()
+def read_dataset(name):
+    if name == 'lenta':
+        all_texts, all_titles = read_data_lenta()
+    else:
+        assert name == 'ria'
+        all_texts, all_titles = read_data_ria()
+
     train_texts, val_texts, train_titles, val_titles = \
         train_test_split(all_texts, all_titles, test_size=0.1, shuffle=True)
     train_dataset = SummarizationDataset(train_texts, train_titles)
@@ -210,8 +216,11 @@ if __name__ == '__main__':
         "--max_target_length",
         default=24,
         type=int,
-        help="The maximum total input sequence length after tokenization. Sequences longer "
-             "than this will be truncated, sequences shorter will be padded.",
+    )
+    parser.add_argument(
+        "--min_target_length",
+        default=1,
+        type=int,
     )
     parser.add_argument(
         "--batch_size",
@@ -264,10 +273,10 @@ if __name__ == '__main__':
         help="patience for plateau_decay; epochs to zero for linear_decay",
     )
     parser.add_argument(
-        "--sportsru",
-        default=False,
-        type=bool,
-        help="train on sports.ru dataset"
+        "--dataset",
+        default='lenta',
+        type=str,
+        help="sportsru, ria or lenta"
     )
 
     TRAIN_EPOCH_FRACTION = 0.2
@@ -277,6 +286,7 @@ if __name__ == '__main__':
     set_batch_size(args.batch_size)
     set_max_len_src(args.max_source_length)
     set_max_len_tgt(args.max_target_length)
+    set_min_len_tgt(args.min_target_length)
 
     print(args)
 
@@ -284,11 +294,13 @@ if __name__ == '__main__':
     if args.ckpt_dir is not None:
         assert os.path.isdir(args.ckpt_dir)
         model = RuBartForConditionalGeneration.from_pretrained(args.ckpt_dir)
+        model.config.min_length = get_min_len_tgt()
+        model.config.max_length = get_max_len_tgt()
 
-    if args.sportsru:
+    if args.dataset == 'sportsru':
         train_loader, val_loader, test_loader = read_sportsru()
     else:
-        train_loader, val_loader = read_lenta()
+        train_loader, val_loader = read_dataset(args.dataset)
 
     params = model.parameters() if args.train_whole_model else model.model.decoder.layers.parameters()
     optimizer = AdamW(params, lr=args.lr)

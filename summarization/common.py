@@ -53,6 +53,14 @@ def get_max_len_tgt():
     global MAX_LEN_TGT
     return MAX_LEN_TGT
 
+def set_min_len_tgt(min_len_tgt):
+    global MIN_LEN_TGT
+    MIN_LEN_TGT = min_len_tgt
+
+def get_min_len_tgt():
+    global MIN_LEN_TGT
+    return MIN_LEN_TGT
+
 
 def set_seed(seed):
     # note: there are another nuances for gpu and multi-gpu
@@ -67,12 +75,12 @@ DATA_PATH = 'data/'
 CKPT_DIR = 'rubart_checkpoints/'
 RUBART_ENC_WEIGHTS_DIR = DATA_PATH + 'ckpts/rubart_initial_weights_from_rubert/'
 
-BATCH_SIZE = 2
+BATCH_SIZE = None
 
 # for lenta data optimal is 512 / 24, for ria data -- 1024 / 24, for sportsru -- 4000 / 200
-MAX_LEN_SRC = 64
-MAX_LEN_TGT = 24
-MIN_LEN_TGT = 1
+MAX_LEN_SRC = None
+MAX_LEN_TGT = None
+MIN_LEN_TGT = None
 
 
 def encode_text(tokenizer, texts, max_len):
@@ -240,7 +248,7 @@ def load_rubart_with_pretrained_encoder():
     tokenizer = BertTokenizer.from_pretrained(RUBART_ENC_WEIGHTS_DIR, do_lower_case=False)  # do_lower_case=False is crucial
     config = BartConfig.from_pretrained(RUBART_ENC_WEIGHTS_DIR)
     config.task_specific_params = None
-    config.min_length, config.max_length = MIN_LEN_TGT, get_max_len_tgt()
+    config.min_length, config.max_length = get_min_len_tgt(), get_max_len_tgt()
     print(config)
 
     model = RuBartForConditionalGeneration(config)
