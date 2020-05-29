@@ -242,6 +242,40 @@ class CollateFnSportsru:
         )
 
 
+def read_dataset(name, tokenizer):
+    if name == 'lenta':
+        all_texts, all_titles = read_data_lenta()
+    else:
+        assert name == 'ria'
+        all_texts, all_titles = read_data_ria()
+
+    train_texts, val_texts, train_titles, val_titles = \
+        train_test_split(all_texts, all_titles, test_size=0.1, shuffle=True)
+    train_dataset = SummarizationDataset(train_texts, train_titles)
+    val_dataset = SummarizationDataset(val_texts, val_titles)
+    collate_fn = CollateFn(tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=get_batch_size(), shuffle=True,
+                              collate_fn=collate_fn, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=get_batch_size(), shuffle=False,
+                            collate_fn=collate_fn, num_workers=8)
+    return train_loader, val_loader
+
+
+def read_sportsru(tokenizer):
+    data = read_data_sportsru()
+    train_dataset = SummarizationDataset(data['train']['src'], data['train']['tgt'])
+    val_dataset = SummarizationDataset(data['val']['src'], data['val']['tgt'])
+    test_dataset = SummarizationDataset(data['test']['src'], data['test']['tgt'])
+    collate_fn = CollateFnSportsru(tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=get_batch_size(), shuffle=True,
+                              collate_fn=collate_fn, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=get_batch_size(), shuffle=False,
+                            collate_fn=collate_fn, num_workers=8)
+    test_loader = DataLoader(test_dataset, batch_size=get_batch_size(), shuffle=False,
+                             collate_fn=collate_fn, num_workers=8)
+    return train_loader, val_loader, test_loader
+
+
 def load_rubart_with_pretrained_encoder():
     from summarization.modeling_rubart import RuBartForConditionalGeneration
 

@@ -6,26 +6,47 @@ from summarization.common import *
 from summarization.modeling_rubart import RuBartForConditionalGeneration
 
 
-CKPT_PATH = DATA_PATH + 'ckpts/rubart_4_epochs_on_lenta'
+SPORTSRU = True
+if SPORTSRU:
+    CKPT_PATH = DATA_PATH + 'ckpts/sportsru_1'
+else:
+    CKPT_PATH = DATA_PATH + 'ckpts/lenta_pretrained'
+
+set_global_device('cpu')
+set_seed(123)
+set_batch_size(1)
+set_max_len_src(256)
+set_max_len_tgt(24)
+set_min_len_tgt(1)
+if SPORTSRU:
+    set_max_len_tgt(256)
+    set_min_len_tgt(64)
+
 model_init, tokenizer = load_rubart_with_pretrained_encoder()
-model = RuBartForConditionalGeneration.from_pretrained(CKPT_PATH)
+model = RuBartForConditionalGeneration.from_pretrained(CKPT_PATH).eval()
 
-new_params = list(model.model.encoder.parameters()) + list(model.model.decoder.embed_tokens.parameters())
-init_params = list(model_init.model.encoder.parameters()) + list(model_init.model.decoder.embed_tokens.parameters())
-assert len(new_params) == len(init_params)
-for new, init in zip(new_params, init_params):
-    assert (new == init).all()
+if SPORTSRU:
+    train_loader, val_loader, test_loader = read_sportsru(tokenizer)
+else:
+    # train_loader, test_loader = read_dataset('lenta', tokenizer)
+    train_loader, test_loader = read_dataset('ria', tokenizer)
 
-texts, titles = read_data_lenta(clip_length=False)
 model.eval()
-for text, title in zip(texts, titles):
-    source_ids = encode_text(tokenizer, text, 256)
+for text, title in test_loader.dataset:
+    if SPORTSRU:
+        source_ids = encode_text_end(tokenizer, text, get_max_len_src())
+    else:
+        source_ids = encode_text(tokenizer, text, get_max_len_src())
+
     encoder_attention_mask = source_ids != tokenizer.pad_token_id
     generated_ids = model.generate(
         input_ids=source_ids,
         attention_mask=encoder_attention_mask,
-        num_beams=4
+        num_beams=4,
+        min_length=get_min_len_tgt(),
+        max_length=get_max_len_tgt(),
     )
+
     generated_title = tokenizer.decode(generated_ids.squeeze(), skip_special_tokens=True, clean_up_tokenization_spaces=True)
     pprint([text, len(text.split())])
     decoded_text = tokenizer.decode(source_ids.squeeze(), skip_special_tokens=True, clean_up_tokenization_spaces=True)
